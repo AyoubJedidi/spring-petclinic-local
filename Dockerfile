@@ -2,34 +2,33 @@
 FROM eclipse-temurin:17-jdk-alpine AS build
 WORKDIR /app
 
-# Copy Maven files (if they exist)
+# Copy Maven wrapper and pom.xml
+COPY mvnw .
+COPY .mvn .mvn
 COPY pom.xml .
-COPY mvnw* ./
-COPY .mvn* .mvn 2>/dev/null || true
-
-# Install system Maven as fallback
-RUN apk add --no-cache maven
 
 # Download dependencies
-RUN if [ -f "./mvnw" ]; then \
-        ./mvnw dependency:go-offline -B; \
-    else \
-        mvn dependency:go-offline -B; \
-    fi || true
+RUN ./mvnw dependency:go-offline
 
-# Copy source
-COPY src ./src
+# Copy source code
+COPY src src
 
-# Build (use wrapper if available, otherwise system maven)
-RUN if [ -f "./mvnw" ]; then \
-        ./mvnw clean package -DskipTests -B; \
-    else \
-        mvn clean package -DskipTests -B; \
-    fi
+# Build application
+RUN ./mvnw package -DskipTests
 
 # Runtime stage
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
+
+# Copy JAR from build stage
 COPY --from=build /app/target/*.jar app.jar
+
+# Create non-root user
+RUN addgroup -S spring && adduser -S spring -G spring
+USER spring:spring
+
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+
+ENV JAVA_OPTS="-Xmx512m"
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
