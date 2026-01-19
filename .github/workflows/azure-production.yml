@@ -1,0 +1,86 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: petclinic
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout
+      uses: actions/checkout@v3
+    
+    - name: ☕ Setup JDK 17
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        cache: 'maven'
+    
+    - name: 🔨 Build Application
+      run: ./mvnw clean package -DskipTests
+    
+    - name: 📊 Verify Build
+      run: ls -lh target/*.jar
+    
+    - name: 🐳 Login to ACR
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ secrets.ACR_SERVER }}
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+    
+    - name: 🚀 Build and Push Docker Image
+      run: |
+        IMAGE_TAG="${{ secrets.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}"
+        IMAGE_LATEST="${{ secrets.ACR_SERVER }}/${{ env.PROJECT_NAME }}:latest"
+        
+        echo "Building: $IMAGE_TAG"
+        docker build -t $IMAGE_TAG .
+        docker tag $IMAGE_TAG $IMAGE_LATEST
+        
+        echo "Pushing images..."
+        docker push $IMAGE_TAG
+        docker push $IMAGE_LATEST
+        
+        echo "✅ Images pushed"
+    
+    - name: 🔑 Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: 🌐 Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+        images: ${{ secrets.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}
+    
+    - name: 🔄 Restart Web App
+      run: |
+        az webapp restart \
+          --name ${{ secrets.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
+    
+    - name: ⏳ Wait for Startup
+      run: sleep 30
+    
+    - name: ✅ Deployment Complete
+      run: |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🎉 DEPLOYMENT SUCCESSFUL"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "🌐 Application URL:"
+        echo "   https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+        echo ""
+        echo "🐳 Docker Image:"
+        echo "   ${{ secrets.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
