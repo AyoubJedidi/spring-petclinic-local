@@ -9,18 +9,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         java-version: [17]
-
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-
-    - name: Set up JDK ${{ matrix.java-version }}      uses: actions/setup-java@v3
+    
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v3
       with:
-        java-version: ${{ matrix.java-version }}        distribution: 'temurin'
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
         cache: 'maven'
-
-    -
+    
+    - name: Build with Maven
+      run: ./mvnw clean package -DskipTests
+    
+    - name: Run tests
+      run: ./mvnw test
