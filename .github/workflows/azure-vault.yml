@@ -4,15 +4,10 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      use_vault:
-        description: 'Use HashiCorp Vault for secrets'
-        required: false
-        type: boolean
-        default: false
 
 env:
   PROJECT_NAME: petclinic
+  USE_VAULT: ${{ secrets.VAULT_ADDR != '' }}
 
 jobs:
   build-and-deploy:
@@ -37,11 +32,11 @@ jobs:
     # ============================================
     - name: 🔐 Fetch Secrets from Vault
       id: vault
-      if: ${{ secrets.VAULT_ADDR != '' || github.event.inputs.use_vault == 'true' }}
+      if: env.USE_VAULT == 'true'
       uses: hashicorp/vault-action@v2
       with:
         url: ${{ secrets.VAULT_ADDR }}
-        namespace: ${{ secrets.VAULT_NAMESPACE || 'admin' }}
+        namespace: ${{ secrets.VAULT_NAMESPACE }}
         token: ${{ secrets.VAULT_TOKEN }}
         secrets: |
           secret/data/azure/acr server | VAULT_ACR_SERVER ;
@@ -53,7 +48,7 @@ jobs:
     - name: 🔑 Set Secrets (Vault or GitHub)
       id: secrets
       run: |
-        if [ "${{ secrets.VAULT_ADDR }}" != "" ]; then
+        if [ "${{ env.USE_VAULT }}" == "true" ]; then
           echo "✅ Using HashiCorp Vault for secrets"
           echo "ACR_SERVER=${{ steps.vault.outputs.VAULT_ACR_SERVER }}" >> $GITHUB_ENV
           echo "ACR_USERNAME=${{ steps.vault.outputs.VAULT_ACR_USERNAME }}" >> $GITHUB_ENV
@@ -105,13 +100,10 @@ jobs:
     - name: 🏗️ Terraform Deploy
       working-directory: terraform/parent
       env:
-        # Terraform variables
         TF_VAR_project_name: ${{ env.PROJECT_NAME }}
         TF_VAR_environment: prod
         TF_VAR_cloud_provider: azure
         TF_VAR_deployment_type: webapp
-        
-        # Standard variables (used if Vault disabled)
         TF_VAR_azure_resource_group: ${{ env.RESOURCE_GROUP }}
         TF_VAR_azure_location: francecentral
         TF_VAR_docker_image: ${{ env.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}
@@ -119,12 +111,7 @@ jobs:
         TF_VAR_registry_username: ${{ env.ACR_USERNAME }}
         TF_VAR_registry_password: ${{ env.ACR_PASSWORD }}
         TF_VAR_gcp_project: dummy-project
-        
-        # Vault variables (used if Vault enabled)
-        TF_VAR_use_vault: ${{ secrets.VAULT_ADDR != '' }}
-        TF_VAR_vault_addr: ${{ secrets.VAULT_ADDR }}
-        TF_VAR_vault_namespace: ${{ secrets.VAULT_NAMESPACE || 'admin' }}
-        TF_VAR_vault_token: ${{ secrets.VAULT_TOKEN }}
+        TF_VAR_use_vault: false
       run: |
         terraform init
         terraform validate
@@ -142,7 +129,7 @@ jobs:
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "🎉 DEPLOYMENT SUCCESSFUL"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        if [ "${{ secrets.VAULT_ADDR }}" != "" ]; then
+        if [ "${{ env.USE_VAULT }}" == "true" ]; then
           echo "🔐 Secrets: HashiCorp Vault"
         else
           echo "🔐 Secrets: GitHub Secrets"
