@@ -1,0 +1,150 @@
+name: Deploy to Azure (Vault Support)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      use_vault:
+        description: 'Use HashiCorp Vault for secrets'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PROJECT_NAME: petclinic
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout Application
+      uses: actions/checkout@v3
+    
+    - name: ☕ Setup JDK 17
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        cache: 'maven'
+    
+    - name: 🔨 Build Application
+      run: ./mvnw clean package -DskipTests
+    
+    # ============================================
+    # VAULT INTEGRATION (Conditional)
+    # ============================================
+    - name: 🔐 Fetch Secrets from Vault
+      id: vault
+      if: ${{ secrets.VAULT_ADDR != '' || github.event.inputs.use_vault == 'true' }}
+      uses: hashicorp/vault-action@v2
+      with:
+        url: ${{ secrets.VAULT_ADDR }}
+        namespace: ${{ secrets.VAULT_NAMESPACE || 'admin' }}
+        token: ${{ secrets.VAULT_TOKEN }}
+        secrets: |
+          secret/data/azure/acr server | VAULT_ACR_SERVER ;
+          secret/data/azure/acr username | VAULT_ACR_USERNAME ;
+          secret/data/azure/acr password | VAULT_ACR_PASSWORD ;
+          secret/data/azure/webapp name | VAULT_WEBAPP_NAME ;
+          secret/data/azure/webapp resource_group | VAULT_RESOURCE_GROUP
+    
+    - name: 🔑 Set Secrets (Vault or GitHub)
+      id: secrets
+      run: |
+        if [ "${{ secrets.VAULT_ADDR }}" != "" ]; then
+          echo "✅ Using HashiCorp Vault for secrets"
+          echo "ACR_SERVER=${{ steps.vault.outputs.VAULT_ACR_SERVER }}" >> $GITHUB_ENV
+          echo "ACR_USERNAME=${{ steps.vault.outputs.VAULT_ACR_USERNAME }}" >> $GITHUB_ENV
+          echo "ACR_PASSWORD=${{ steps.vault.outputs.VAULT_ACR_PASSWORD }}" >> $GITHUB_ENV
+          echo "WEBAPP_NAME=${{ steps.vault.outputs.VAULT_WEBAPP_NAME }}" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=${{ steps.vault.outputs.VAULT_RESOURCE_GROUP }}" >> $GITHUB_ENV
+        else
+          echo "✅ Using GitHub Secrets (Vault not configured)"
+          echo "ACR_SERVER=${{ secrets.ACR_SERVER }}" >> $GITHUB_ENV
+          echo "ACR_USERNAME=${{ secrets.ACR_USERNAME }}" >> $GITHUB_ENV
+          echo "ACR_PASSWORD=${{ secrets.ACR_PASSWORD }}" >> $GITHUB_ENV
+          echo "WEBAPP_NAME=${{ secrets.AZURE_WEBAPP_NAME }}" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }}" >> $GITHUB_ENV
+        fi
+    
+    - name: 🐳 Login to ACR
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ env.ACR_SERVER }}
+        username: ${{ env.ACR_USERNAME }}
+        password: ${{ env.ACR_PASSWORD }}
+    
+    - name: 🚀 Build and Push Image
+      run: |
+        IMAGE="${{ env.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}"
+        LATEST="${{ env.ACR_SERVER }}/${{ env.PROJECT_NAME }}:latest"
+        
+        docker build -t $IMAGE .
+        docker tag $IMAGE $LATEST
+        docker push $IMAGE
+        docker push $LATEST
+    
+    - name: 📥 Checkout Terraform
+      uses: actions/checkout@v3
+      with:
+        repository: AyoubJedidi/Terraform-Multicloud
+        path: terraform
+    
+    - name: 🔧 Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.10.3
+    
+    - name: 🔑 Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: 🏗️ Terraform Deploy
+      working-directory: terraform/parent
+      env:
+        # Terraform variables
+        TF_VAR_project_name: ${{ env.PROJECT_NAME }}
+        TF_VAR_environment: prod
+        TF_VAR_cloud_provider: azure
+        TF_VAR_deployment_type: webapp
+        
+        # Standard variables (used if Vault disabled)
+        TF_VAR_azure_resource_group: ${{ env.RESOURCE_GROUP }}
+        TF_VAR_azure_location: francecentral
+        TF_VAR_docker_image: ${{ env.ACR_SERVER }}/${{ env.PROJECT_NAME }}:${{ github.sha }}
+        TF_VAR_registry_server: ${{ env.ACR_SERVER }}
+        TF_VAR_registry_username: ${{ env.ACR_USERNAME }}
+        TF_VAR_registry_password: ${{ env.ACR_PASSWORD }}
+        TF_VAR_gcp_project: dummy-project
+        
+        # Vault variables (used if Vault enabled)
+        TF_VAR_use_vault: ${{ secrets.VAULT_ADDR != '' }}
+        TF_VAR_vault_addr: ${{ secrets.VAULT_ADDR }}
+        TF_VAR_vault_namespace: ${{ secrets.VAULT_NAMESPACE || 'admin' }}
+        TF_VAR_vault_token: ${{ secrets.VAULT_TOKEN }}
+      run: |
+        terraform init
+        terraform validate
+        terraform plan -out=tfplan
+        terraform apply -auto-approve tfplan
+    
+    - name: 📊 Get Deployment URL
+      working-directory: terraform/parent
+      run: |
+        URL=$(terraform output -raw deployment_url)
+        echo "🌐 Application: $URL"
+    
+    - name: ✅ Success
+      run: |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🎉 DEPLOYMENT SUCCESSFUL"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        if [ "${{ secrets.VAULT_ADDR }}" != "" ]; then
+          echo "🔐 Secrets: HashiCorp Vault"
+        else
+          echo "🔐 Secrets: GitHub Secrets"
+        fi
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
